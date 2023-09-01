@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports, unused_variables)]
 use clap::{crate_version, Arg, Command};
 use crossterm::cursor::MoveToColumn;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
@@ -430,122 +431,103 @@ fn run(
     }
     Ok(())
 }
-
 use crossterm::cursor::*;
-use crossterm::execute;
 use crossterm::terminal::*;
+use crossterm::QueueableCommand;
 use std::io;
+use std::io::Write;
 
 struct Display<'a> {
-    pub start: u16,
-    pub end: u16,
     graph: &'a [String],
     text: &'a [String],
-    graph_len: u16,
+    len: usize,
+    height: usize,
+    idx: i32,
+    end: usize,
 }
 
 impl<'a> Display<'a> {
-    fn new(graph: &'a [String], text: &'a [String]) -> Display<'a> {
+    fn new(height: usize, graph: &'a [String], text: &'a [String]) -> Display<'a> {
         Self {
-            start: 0,
-            end: 0,
             graph,
             text,
-            graph_len: graph.len() as u16,
+            height,
+            len: graph.len(),
+            idx: 0,
+            end: 0,
         }
     }
-    fn init_draw(&mut self, height: u16) -> io::Result<()> {
-        stdout().execute(MoveTo(0, 0))?;
-        for idx in 0..height - 1 {
-            stdout().execute(Print(format!(
-                " {}  {}\n",
-                self.graph[idx as usize], self.text[idx as usize]
-            )))?;
-            if idx >= self.graph_len - 1 {
-                break;
-            }
-            self.end = idx;
-        }
-        self.draw_help()?;
-        Ok(())
-    }
-    fn move_down(&mut self, mut i: u16) -> io::Result<()> {
-        i = i.min(self.graph_len - self.end - 1);
-        for _ in 0..i {
-            self.start += 1;
+    fn draw_init(&mut self, y: u16) -> io::Result<()> {
+        for i in 0..(self.height - y as usize - 1) as usize {
+            stdout().execute(Print(format!(" {}  {}\n", self.graph[i], self.text[i])))?;
             self.end += 1;
-            let l = format!(
-                " {}  {}\n",
-                self.graph[self.end as usize], self.text[self.end as usize]
-            );
-            execute!(
-                stdout(),
-                MoveTo(0, self.end),
-                Clear(ClearType::CurrentLine),
-                Print(l),
-            )?;
         }
-        execute!(stdout(), MoveTo(0, self.end), Clear(ClearType::CurrentLine))?;
+        self.idx = (self.end as i32 - self.height as i32).max(0);
+        self.draw_help()?;
+        stdout().flush()?;
+        Ok(())
+    }
+    fn move_down(&mut self, mut q: usize) -> io::Result<()> {
+        q = q.min(self.len - self.end);
+        for _ in 0..q {
+            stdout()
+                .queue(MoveTo(0, self.height as u16 - 1))?
+                .queue(Print(format!(
+                    " {}  {}\n",
+                    self.graph[self.end], self.text[self.end]
+                )))?;
+            self.end += 1;
+        }
+        self.idx = (self.end as i32 - self.height as i32).max(0);
+        self.draw_help()?;
+        stdout().flush()?;
+        Ok(())
+    }
+    fn move_up(&mut self, q: usize) -> io::Result<()> {
+        for _ in 0..q {
+            self.up()?;
+        }
         self.draw_help()?;
         Ok(())
     }
-
-    fn move_up(&mut self, mut i: u16) -> io::Result<()> {
-        i = i.min(self.start);
-        for _ in 0..i {
-            self.start -= 1;
-            self.end -= 1;
-            let l = format!(
-                " {}  {}\n",
-                self.graph[self.start as usize], self.text[self.start as usize]
-            );
-            execute!(stdout(), MoveTo(0, self.end), Clear(ClearType::CurrentLine))?;
-            execute!(stdout(), ScrollDown(1), MoveTo(0, 0), Print(l))?;
-            self.draw_help()?;
-        }
-        Ok(())
-    }
-
-    fn draw_help(&self) -> io::Result<()> {
-        let help = "\r >>> Down: line, PgDown/Enter: page, End: all, Esc/Q/^C: quit\r";
-        let help_end = "\r --- press Esc to quit ---\r";
-        stdout().execute(MoveTo(0, self.end + 1))?;
-        if self.is_end() {
-            stdout().execute(Print(help_end))?;
-        } else {
-            stdout().execute(Print(help))?;
-        }
-        Ok(())
-    }
-
-    fn is_end(&self) -> bool {
-        self.graph_len - self.end - 1 < 1
-    }
-
-    fn quit(&self) -> io::Result<()> {
-        stdout()
-            .execute(MoveTo(0, self.end + 1))?
-            .execute(Clear(ClearType::CurrentLine))?;
-        if !self.is_end() {
+    fn up(&mut self) -> io::Result<()> {
+        if self.idx >= 0 {
             stdout()
-                .execute(MoveToColumn(0))?
-                .execute(Print(" ...\n"))?;
+                .queue(ScrollDown(1))?
+                .queue(MoveTo(0, 0))?
+                .queue(Print(format!(
+                    " {}  {}\n",
+                    self.graph[self.idx as usize], self.text[self.idx as usize]
+                )))?;
+            self.end -= 1;
+            self.idx -= 1;
+            self.draw_help()?;
+            stdout().flush()?;
         }
+        Ok(())
+    }
+    fn draw_help(&mut self) -> io::Result<()> {
+        let help = ":";
+        stdout()
+            .queue(MoveTo(0, self.height as u16))?
+            .queue(Clear(ClearType::CurrentLine))?
+            .queue(Print(help))?;
         Ok(())
     }
 }
 
+use crossterm::{cursor, terminal};
+
 /// Print the graph, paged (i.e. wait for user input once the terminal is filled).
 fn print_paged_e(graph_lines: &[String], text_lines: &[String]) -> Result<(), ErrorKind> {
-    let (_width, height) = crossterm::terminal::size()?;
+    stdout().execute(Hide)?;
+    let (_width, height) = terminal::size()?;
+    let height = height as usize;
+    let mut display = Display::new(height as usize, graph_lines, text_lines);
 
-    let mut display = Display::new(graph_lines, text_lines);
-    display.init_draw(height)?;
-
-    stdout().execute(MoveTo(0, 0))?;
-
+    let (_x, y) = cursor::position()?;
+    display.draw_init(y)?;
     let mut last_key = KeyCode::Enter;
-
     loop {
         enable_raw_mode()?;
         let input = crossterm::event::read()?;
@@ -582,14 +564,14 @@ fn print_paged_e(graph_lines: &[String], text_lines: &[String]) -> Result<(), Er
                     }
                 }
                 KeyCode::Enter | KeyCode::Char('G') => {
-                    display.move_down(graph_lines.len() as u16)?;
+                    display.move_down(graph_lines.len())?;
                 }
                 KeyCode::Home => {
-                    display.move_up(graph_lines.len() as u16)?;
+                    display.move_up(graph_lines.len())?;
                 }
                 KeyCode::Char('g') => {
                     if last_key == KeyCode::Char('g') {
-                        display.move_up(graph_lines.len() as u16)?;
+                        display.move_up(graph_lines.len())?;
                     }
                 }
                 _ => {}
@@ -597,8 +579,8 @@ fn print_paged_e(graph_lines: &[String], text_lines: &[String]) -> Result<(), Er
             last_key = evt.code;
         }
     }
-    display.quit()?;
     disable_raw_mode()?;
+    stdout().execute(Show)?;
     Ok(())
 }
 
