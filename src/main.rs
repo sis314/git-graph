@@ -462,6 +462,7 @@ impl<'a> Display<'a> {
                 self.graph[idx as usize], self.text[idx as usize]
             )))?;
             if idx >= self.graph_len - 1 {
+                self.quit()?;
                 break;
             }
             self.end = idx;
