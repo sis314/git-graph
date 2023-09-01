@@ -457,37 +457,13 @@ impl<'a> Display<'a> {
             end: 0,
         }
     }
-<<<<<<< HEAD
-    fn init_draw(&mut self, height: u16) -> io::Result<()> {
-        stdout().execute(MoveTo(0, 0))?;
-        for idx in 0..height - 1 {
-            stdout().execute(Print(format!(
-                " {}  {}\n",
-                self.graph[idx as usize], self.text[idx as usize]
-            )))?;
-            if idx >= self.graph_len - 1 {
-                self.quit()?;
-                break;
-            }
-            self.end = idx;
-        }
-        self.draw_help()?;
-        Ok(())
-    }
-    fn move_down(&mut self, mut i: u16) -> io::Result<()> {
-        i = i.min(self.graph_len - self.end - 1);
-        for _ in 0..i {
-            self.start += 1;
-=======
     fn draw_init(&mut self, y: u16) -> io::Result<()> {
         for i in 0..(self.height - y as usize - 1) as usize {
             stdout().execute(Print(format!(" {}  {}\n", self.graph[i], self.text[i])))?;
->>>>>>> short
             self.end += 1;
         }
         self.idx = (self.end as i32 - self.height as i32).max(0);
-        self.draw_help()?;
-        stdout().flush()?;
+        self.move_down(1)?;
         Ok(())
     }
     fn move_down(&mut self, mut q: usize) -> io::Result<()> {
@@ -511,10 +487,11 @@ impl<'a> Display<'a> {
             self.up()?;
         }
         self.draw_help()?;
+        //stdout().flush()?;
         Ok(())
     }
     fn up(&mut self) -> io::Result<()> {
-        if self.idx >= 0 {
+        if self.idx >= 0 && self.height as i32 - self.end as i32 <= 0 {
             stdout()
                 .queue(ScrollDown(1))?
                 .queue(MoveTo(0, 0))?
@@ -524,8 +501,6 @@ impl<'a> Display<'a> {
                 )))?;
             self.end -= 1;
             self.idx -= 1;
-            self.draw_help()?;
-            stdout().flush()?;
         }
         Ok(())
     }
