@@ -412,7 +412,7 @@ fn run(
     } else {
         let (g_lines, t_lines, _indices) = print_unicode(&graph, settings)?;
         if pager && atty::is(atty::Stream::Stdout) {
-            print_paged(&g_lines, &t_lines).map_err(|err| err.to_string())?;
+            print_paged_e(&g_lines, &t_lines).map_err(|err| err.to_string())?;
         } else {
             print_unpaged(&g_lines, &t_lines);
         }
@@ -431,86 +431,165 @@ fn run(
     Ok(())
 }
 
-/// Print the graph, paged (i.e. wait for user input once the terminal is filled).
-fn print_paged(graph_lines: &[String], text_lines: &[String]) -> Result<(), ErrorKind> {
-    let (width, height) = crossterm::terminal::size()?;
-    let width = width as usize;
+use crossterm::cursor::*;
+use crossterm::execute;
+use crossterm::terminal::*;
+use std::io;
 
-    let mut line_idx = 0;
-    let mut print_lines = height - 2;
-    let mut clear = false;
-    let mut abort = false;
+struct Display<'a> {
+    pub start: u16,
+    pub end: u16,
+    graph: &'a [String],
+    text: &'a [String],
+    graph_len: u16,
+}
 
-    let help = "\r >>> Down: line, PgDown/Enter: page, End: all, Esc/Q/^C: quit\r";
-    let help = if help.len() > width {
-        &help[0..width]
-    } else {
-        help
-    };
-
-    while line_idx < graph_lines.len() {
-        if print_lines > 0 {
-            if clear {
-                stdout()
-                    .execute(Clear(ClearType::CurrentLine))?
-                    .execute(MoveToColumn(0))?;
-            }
-
+impl<'a> Display<'a> {
+    fn new(graph: &'a [String], text: &'a [String]) -> Display<'a> {
+        Self {
+            start: 0,
+            end: 0,
+            graph,
+            text,
+            graph_len: graph.len() as u16,
+        }
+    }
+    fn init_draw(&mut self, height: u16) -> io::Result<()> {
+        for idx in 0..height - 1 {
             stdout().execute(Print(format!(
                 " {}  {}\n",
-                graph_lines[line_idx], text_lines[line_idx]
+                self.graph[idx as usize], self.text[idx as usize]
             )))?;
-
-            if print_lines == 1 && line_idx < graph_lines.len() - 1 {
-                stdout().execute(Print(help))?;
+            if idx >= self.graph_len - 1 {
+                break;
             }
-            print_lines -= 1;
-            line_idx += 1;
+            self.end = idx;
+        }
+        self.draw_help()?;
+        Ok(())
+    }
+    fn move_down(&mut self, mut i: u16) -> io::Result<()> {
+        i = i.min(self.graph_len - self.end - 1);
+        for _ in 0..i {
+            self.start += 1;
+            self.end += 1;
+            let l = format!(
+                " {}  {}\n",
+                self.graph[self.end as usize], self.text[self.end as usize]
+            );
+            execute!(
+                stdout(),
+                MoveTo(0, self.end),
+                Clear(ClearType::CurrentLine),
+                Print(l),
+            )?;
+        }
+        execute!(stdout(), MoveTo(0, self.end), Clear(ClearType::CurrentLine))?;
+        self.draw_help()?;
+        Ok(())
+    }
+
+    fn move_up(&mut self, mut i: u16) -> io::Result<()> {
+        i = i.min(self.start);
+        for _ in 0..i {
+            self.start -= 1;
+            self.end -= 1;
+            let l = format!(
+                " {}  {}\n",
+                self.graph[self.start as usize], self.text[self.start as usize]
+            );
+            execute!(stdout(), MoveTo(0, self.end), Clear(ClearType::CurrentLine))?;
+            execute!(stdout(), ScrollDown(1), MoveTo(0, 0), Print(l))?;
+            self.draw_help()?;
+        }
+        Ok(())
+    }
+
+    fn draw_help(&self) -> io::Result<()> {
+        let help = "\r >>> Down: line, PgDown/Enter: page, End: all, Esc/Q/^C: quit\r";
+        let help_end = "\r --- press Esc to quit ---\r";
+        stdout().execute(MoveTo(0, self.end + 1))?;
+        if self.is_end() {
+            stdout().execute(Print(help_end))?;
         } else {
-            enable_raw_mode()?;
-            let input = crossterm::event::read()?;
-            if let Event::Key(evt) = input {
-                match evt.code {
-                    KeyCode::Down => {
-                        clear = true;
-                        print_lines = 1;
-                    }
-                    KeyCode::Enter | KeyCode::PageDown => {
-                        clear = true;
-                        print_lines = height - 2;
-                    }
-                    KeyCode::End => {
-                        clear = true;
-                        print_lines = graph_lines.len() as u16;
-                    }
-                    KeyCode::Char(c) => match c {
-                        'q' => {
-                            abort = true;
-                            break;
-                        }
-                        'c' if evt.modifiers == KeyModifiers::CONTROL => {
-                            abort = true;
-                            break;
-                        }
-                        _ => {}
-                    },
-                    KeyCode::Esc => {
-                        abort = true;
-                        break;
-                    }
-                    _ => {}
+            stdout().execute(Print(help))?;
+        }
+        Ok(())
+    }
+
+    fn is_end(&self) -> bool {
+        self.graph_len - self.end - 1 < 1
+    }
+
+    fn quit(&self) -> io::Result<()> {
+        stdout()
+            .execute(MoveTo(0, self.end + 1))?
+            .execute(Clear(ClearType::CurrentLine))?;
+        if !self.is_end() {
+            stdout()
+                .execute(MoveToColumn(0))?
+                .execute(Print(" ...\n"))?;
+        }
+        Ok(())
+    }
+}
+
+/// Print the graph, paged (i.e. wait for user input once the terminal is filled).
+fn print_paged_e(graph_lines: &[String], text_lines: &[String]) -> Result<(), ErrorKind> {
+    let (_width, height) = crossterm::terminal::size()?;
+
+    let mut display = Display::new(graph_lines, text_lines);
+    display.init_draw(height)?;
+
+    stdout().execute(MoveTo(0, 0))?;
+
+    loop {
+        enable_raw_mode()?;
+        let input = crossterm::event::read()?;
+        if let Event::Key(evt) = input {
+            match evt.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    break;
                 }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    display.move_down(1)?;
+                }
+                KeyCode::Char('d') => {
+                    if evt.modifiers == KeyModifiers::CONTROL {
+                        display.move_down(height / 2)?;
+                    }
+                }
+                KeyCode::Char('f') => {
+                    if evt.modifiers == KeyModifiers::CONTROL {
+                        display.move_down(height)?;
+                    }
+                }
+
+                KeyCode::Up | KeyCode::Char('k') => {
+                    display.move_up(1)?;
+                }
+                KeyCode::Char('u') => {
+                    if evt.modifiers == KeyModifiers::CONTROL {
+                        display.move_up(height / 2)?;
+                    }
+                }
+                KeyCode::Char('b') => {
+                    if evt.modifiers == KeyModifiers::CONTROL {
+                        display.move_up(height)?;
+                    }
+                }
+                KeyCode::Enter => {
+                    display.move_down(graph_lines.len() as u16)?;
+                }
+                KeyCode::Home => {
+                    display.move_up(graph_lines.len() as u16)?;
+                }
+                _ => {}
             }
         }
     }
-    if abort {
-        stdout()
-            .execute(Clear(ClearType::CurrentLine))?
-            .execute(MoveToColumn(0))?
-            .execute(Print(" ...\n"))?;
-    }
+    display.quit()?;
     disable_raw_mode()?;
-
     Ok(())
 }
 
