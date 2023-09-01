@@ -455,6 +455,7 @@ impl<'a> Display<'a> {
         }
     }
     fn init_draw(&mut self, height: u16) -> io::Result<()> {
+        stdout().execute(MoveTo(0, 0))?;
         for idx in 0..height - 1 {
             stdout().execute(Print(format!(
                 " {}  {}\n",
@@ -543,6 +544,8 @@ fn print_paged_e(graph_lines: &[String], text_lines: &[String]) -> Result<(), Er
 
     stdout().execute(MoveTo(0, 0))?;
 
+    let mut last_key = KeyCode::Enter;
+
     loop {
         enable_raw_mode()?;
         let input = crossterm::event::read()?;
@@ -578,14 +581,20 @@ fn print_paged_e(graph_lines: &[String], text_lines: &[String]) -> Result<(), Er
                         display.move_up(height)?;
                     }
                 }
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Char('G') => {
                     display.move_down(graph_lines.len() as u16)?;
                 }
                 KeyCode::Home => {
                     display.move_up(graph_lines.len() as u16)?;
                 }
+                KeyCode::Char('g') => {
+                    if last_key == KeyCode::Char('g') {
+                        display.move_up(graph_lines.len() as u16)?;
+                    }
+                }
                 _ => {}
             }
+            last_key = evt.code;
         }
     }
     display.quit()?;
